@@ -1,0 +1,25 @@
+manifestVersion: 1
+id: bitaxe-dashboard
+category: bitcoin
+name: Bitaxe Dashboard
+version: "1.0.0"
+tagline: Bitaxe ASIC fleet dashboard with auto-throttle
+icon: icon.png
+description: >-
+  Web dashboard for monitoring and managing Bitaxe ASIC miners.
+  Features real-time telemetry, auto-throttling based on temperature,
+  benchmark profiles, history logging with SQLite, and 24h predictive
+  planning using weather forecasts.
+
+  Automatically discovers ASICs on your LAN, profiles their
+  performance at different frequency/voltage settings, and
+  dynamically adjusts them to balance hashrate vs temperature.
+developer: Xeo
+website: https://github.com/xeo
+support: https://github.com/xeo/5tratumos-store/issues
+dependencies: []
+port: 5050
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

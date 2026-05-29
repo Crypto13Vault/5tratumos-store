@@ -1,0 +1,26 @@
+version: "3.7"
+
+services:
+  dashboard:
+    image: ghcr.io/Crypto13Vault/bitaxe-dashboard:latest
+    restart: unless-stopped
+    stop_grace_period: 10s
+    ports:
+      - "5050:5050/tcp"
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/data
+    networks:
+      default:
+        aliases:
+          - bitaxe-dashboard
+    environment:
+      POOL_HOST: "192.168.0.200"
+      POOL_SSH_USER: "forge"
+      POOL_SSH_PASS: "${APP_PASSWORD}"
+      BTC_ADDRESS: "3DDkDJShKEym8xeLHwwJt3gcG1QgcyXPwu"
+      THROTTLE_HIGH: "67"
+      THROTTLE_PERF_TEMP: "55"
+      THROTTLE_LOW: "60"
+      THROTTLE_OVERHEAT_COOLDOWN: "600"
+      PLANNER_SAFETY_MARGIN: "3"
+      SCAN_SUBNET: "192.168.0.0/24"
