@@ -1,0 +1,30 @@
+manifestVersion: 1
+id: axe1175
+category: bitcoin
+name: 1175 Pool
+version: "1.0.0"
+tagline: 1175 (ElevenSeventyFive) mining pool
+icon: icon.png
+description: >-
+  Run a 1175 (ElevenSeventyFive) full node and Stratum v1 pool (ckpool)
+  as a single app.
+
+  Miner connection:
+    - URL: `stratum+tcp://<your-host-ip>:61178`
+    - Username: worker name (optional)
+    - Password: anything
+
+  Notes:
+    - Set your payout address in the app Settings tab.
+    - Pool settings apply automatically; miners may briefly reconnect after saving.
+    - On first launch the node syncs the 1175 blockchain (~5 GB).
+    - BTC signature: BitaxeRMT_Mods
+developer: BitaxeRMT
+website: https://github.com/BitaxeRMT
+support: https://github.com/Crypto13Vault/5tratumos-store/issues
+dependencies: []
+port: 61179
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
