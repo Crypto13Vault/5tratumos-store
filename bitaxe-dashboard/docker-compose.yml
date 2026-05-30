@@ -2,7 +2,7 @@ version: "3.7"
 
 services:
   dashboard:
-    image: ghcr.io/Crypto13Vault/bitaxe-dashboard:latest
+    image: ghcr.io/crypto13vault/bitaxe-dashboard:latest
     restart: unless-stopped
     stop_grace_period: 10s
     ports:
