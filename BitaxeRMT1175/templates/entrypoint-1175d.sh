@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-echo '[axe1175] 1175d entrypoint starting'
+echo '[BitaxeRMT1175] 1175d entrypoint starting'
 
 if ! command -v 1175d >/dev/null 2>&1 && ! command -v elevenseventyfived >/dev/null 2>&1; then
-  echo '[axe1175] ERROR: 1175d not found'
+  echo '[BitaxeRMT1175] ERROR: 1175d not found'
   exit 127
 fi
 
@@ -12,7 +12,7 @@ CMD="$(command -v 1175d 2>/dev/null || command -v elevenseventyfived 2>/dev/null
 
 extra=''
 if [ -f /data/.reindex-chainstate ]; then
-  echo '[axe1175] Reindex requested (chainstate).'
+  echo '[BitaxeRMT1175] Reindex requested (chainstate).'
   rm -f /data/.reindex-chainstate || true
   extra='-reindex-chainstate'
 fi
@@ -26,6 +26,6 @@ if [ -z "${dbcache}" ]; then
   if [ "$dbcache" -gt 12288 ]; then dbcache=12288; fi
 fi
 
-echo "[axe1175] Using dbcache=${dbcache}MB"
-echo "[axe1175] Exec: ${CMD} -datadir=/data -conf=/data/bitcoin.conf -printtoconsole -dbcache=${dbcache} ${extra}"
+echo "[BitaxeRMT1175] Using dbcache=${dbcache}MB"
+echo "[BitaxeRMT1175] Exec: ${CMD} -datadir=/data -conf=/data/bitcoin.conf -printtoconsole -dbcache=${dbcache} ${extra}"
 exec "${CMD}" -datadir=/data -conf=/data/bitcoin.conf -printtoconsole -dbcache="${dbcache}" ${extra}

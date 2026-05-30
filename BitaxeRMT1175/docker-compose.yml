@@ -101,7 +101,7 @@ services:
     networks:
       default:
         aliases:
-          - axe1175-app
+          - BitaxeRMT1175-app
     volumes:
       - ${APP_DATA_DIR}/data:/data
       - ${APP_DATA_DIR}:/appdata
