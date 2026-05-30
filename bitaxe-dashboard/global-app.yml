@@ -14,9 +14,9 @@ description: >-
   Automatically discovers ASICs on your LAN, profiles their
   performance at different frequency/voltage settings, and
   dynamically adjusts them to balance hashrate vs temperature.
-developer: Xeo
-website: https://github.com/xeo
-support: https://github.com/xeo/5tratumos-store/issues
+developer: BitaxeRMT
+website: https://github.com/BitaxeRMT
+support: https://github.com/Crypto13Vault/5tratumos-store/issues
 dependencies: []
 port: 5050
 gallery: []
