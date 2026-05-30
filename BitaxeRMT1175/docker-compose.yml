@@ -50,6 +50,8 @@ services:
             chown -R 1000:1000 /data/pool
           fi
         fi
+        cp /data/templates/icon.png /appdata/icon.png 2>/dev/null || true
+
         if [ ! -f /data/pool/config/ckpool.args ]; then
           echo "-B" > /data/pool/config/ckpool.args
           chown 1000:1000 /data/pool/config/ckpool.args || true
@@ -91,7 +93,7 @@ services:
       - /ckpool-entrypoint.sh
 
   app:
-    image: ghcr.io/crypto13vault/1175-webui:latest
+    image: ghcr.io/willitmod/axebtc-app-umbrel-dev:0.7.82.4-dev
     user: 1000:1000
     restart: unless-stopped
     stop_grace_period: 30s
@@ -104,14 +106,15 @@ services:
           - BitaxeRMT1175-app
     volumes:
       - ${APP_DATA_DIR}/data:/data
-      - ${APP_DATA_DIR}:/appdata
+      - ${APP_DATA_DIR}/icon.png:/app/static/icon.png:ro
     environment:
-      RPC_HOST: bitcoind
-      RPC_PORT: '25359'
-      RPC_USER: btc
-      RPC_PASS: ${APP_PASSWORD}
+      BTC_RPC_HOST: bitcoind
+      BTC_RPC_PORT: '25359'
+      BTC_RPC_USER: btc
+      BTC_RPC_PASS: ${APP_PASSWORD}
       CKPOOL_STATUS_DIR: /data/pool/www/pool
-      DATA_DIR: /data
-      SETTINGS_FILE: /appdata/settings.yml
+      APP_CHANNEL: RC1
+      BITCOIND_IMAGE: ghcr.io/crypto13vault/1175d:latest
+      CKPOOL_IMAGE: ghcr.io/willitmod/docker-ckpool-solo:590fb2a
     ports:
       - 61179:3000
