@@ -51,6 +51,9 @@ services:
           fi
         fi
         cp /data/templates/icon.png /appdata/icon.png 2>/dev/null || true
+        # Pre-set Bitcoin Core choice so WillItMod app doesn't prompt user
+        mkdir -p /data/node
+        echo "core" > /data/node/btc_core_choice
 
         if [ ! -f /data/pool/config/ckpool.args ]; then
           echo "-B" > /data/pool/config/ckpool.args
