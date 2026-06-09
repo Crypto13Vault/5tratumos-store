@@ -4,7 +4,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends sshpass openssh
 RUN pip install --no-cache-dir flask
 
 COPY bitaxe_dashboard.py /app/
-COPY Documents/JSON /app/Documents/JSON/
 WORKDIR /app
 
 EXPOSE 5050
