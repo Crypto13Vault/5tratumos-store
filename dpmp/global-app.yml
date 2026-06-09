@@ -1,0 +1,27 @@
+manifestVersion: 1
+id: dpmp
+category: bitcoin
+name: DPMP
+version: "2.0.0"
+tagline: Dual-Pool Mining Proxy
+icon: icon.png
+description: >-
+  DPMP is a lightweight, high-reliability Stratum v1 mining proxy designed to
+  sit between one or more miners and two upstream mining pools. Enables
+  deterministic dual-pool scheduling, advanced difficulty/extranonce handling,
+  and observability via Prometheus metrics.
+
+  Features fleet-aware scheduling, manual/auto-balance/oracle modes, miner
+  health scoring, pool failover protection, and a NiceGUI dashboard.
+
+  Supports 50-200+ miners depending on hardware. Runs on any x86_64 Linux
+  system with Docker.
+developer: BitaxeRMT
+website: https://github.com/Crypto13Vault/dpmp
+support: https://github.com/Crypto13Vault/dpmp/issues
+dependencies: []
+port: 8845
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

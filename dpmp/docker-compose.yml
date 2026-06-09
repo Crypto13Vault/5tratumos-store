@@ -1,0 +1,15 @@
+services:
+  dpmp:
+    image: ghcr.io/crypto13vault/dpmp:latest
+    restart: unless-stopped
+    stop_grace_period: 10s
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "3351:3351/tcp"
+      - "8845:8845/tcp"
+      - "9210:9210/tcp"
+    environment:
+      - NICEGUI_PORT=8845
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
