@@ -2,16 +2,16 @@ manifestVersion: 1
 id: bitaxe-dashboard
 category: bitcoin
 name: Bitaxe Dashboard
-version: "1.1.0"
-tagline: Bitaxe ASIC fleet dashboard with auto-throttle & benchmark
-icon: icon.png
+version: "1.2.0"
+tagline: Bitaxe ASIC fleet dashboard with auto-throttle v2 & neon theme
 description: >-
   Monitor, control, and auto-discover your Bitaxe ASIC fleet.
   Automatically detects miners on your LAN, monitors real-time
   temperature and hashrate, benchmarks frequency/voltage
   performance with hill-climbing, and dynamically auto-throttles
-  to balance hashrate vs temperature. Includes 24h predictive
-  planning using weather forecasts.
+  using real sustained hashrate optimization within 65°C safety.
+  Features neon cyan/magenta theme with Orbitron font.
+  Includes 24h predictive planning using weather forecasts.
 developer: Crypto13Vault
 website: https://github.com/Crypto13Vault/5tratumos-store
 support: https://github.com/Crypto13Vault/5tratumos-store/issues

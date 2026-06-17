@@ -71,7 +71,7 @@ def load_settings():
     defaults = {
         "static_ips": "", "auto_discover": True, "scan_subnet": "192.168.0.0/24",
         "weather_lat": "51.53446", "weather_lon": "-2.54698", "ambient_offset": -1,
-        "throttle_high": 59, "throttle_low": 52, "throttle_perf_temp": 45,
+        "throttle_high": 59, "throttle_low": 52,
         "benchmark_duration": 180, "benchmark_sample_interval": 1, "benchmark_stabilize_time": 30,
     }
     try:
@@ -146,10 +146,9 @@ if _static_ips_from_settings:
             STATIC_MINERS.append({"ip": ip, "name": ip, "static": True})
 
 # --- Auto-Throttle (per-ASIC profile-based temp regulation) ---
-THROTTLE_HIGH = int(os.environ.get("THROTTLE_HIGH", str(_settings.get("throttle_high", "59"))))
-THROTTLE_LOW = int(os.environ.get("THROTTLE_LOW", str(_settings.get("throttle_low", "52"))))
+THROTTLE_HIGH = int(os.environ.get("THROTTLE_HIGH", str(_settings.get("throttle_high", "63"))))
+THROTTLE_LOW = int(os.environ.get("THROTTLE_LOW", str(_settings.get("throttle_low", "48"))))
 THROTTLE_RAMP_COOLDOWN = int(os.environ.get("THROTTLE_RAMP_COOLDOWN", "300"))
-THROTTLE_PERF_TEMP = int(os.environ.get("THROTTLE_PERF_TEMP", str(_settings.get("throttle_perf_temp", "45"))))
 THROTTLE_OVERHEAT_COOLDOWN = int(os.environ.get("THROTTLE_OVERHEAT_COOLDOWN", "600"))
 THROTTLE_PROFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Documents", "JSON")
 
@@ -172,7 +171,6 @@ _benchmark_progress_lock = threading.Lock()
 _benchmark_asic_cache = {}
 
 _throttle_profiles = {}
-_throttle_perf = {}
 _throttle_state = {}
 _throttle_loaded = False
 _throttle_lock = threading.Lock()
@@ -220,14 +218,13 @@ def _fetch_current_ambient():
         return None
 
 def _ensure_throttle_profiles():
-    global _throttle_profiles, _throttle_perf, _throttle_loaded
+    global _throttle_profiles, _throttle_loaded
     if _throttle_loaded:
         return
     with _throttle_lock:
         if _throttle_loaded:
             return
         _throttle_profiles = {}
-        _throttle_perf = {}
         if os.path.isdir(THROTTLE_PROFILES_DIR):
             for fname in os.listdir(THROTTLE_PROFILES_DIR):
                 if fname.endswith(".json"):
@@ -239,17 +236,15 @@ def _ensure_throttle_profiles():
                         with open(os.path.join(THROTTLE_PROFILES_DIR, fname)) as f:
                             data = json.load(f)
                         entries = sorted(data.get("all_results", []), key=lambda x: (x.get("frequency", 0), x.get("coreVoltage", 0)))
-                        top = data.get("top_performers", [])
                         if entries:
                             _throttle_profiles[ip] = entries
-                            _throttle_perf[ip] = top
-                            _throttle_state[ip] = {"profile_idx": 0, "last_action": 0, "mode": "thermal", "cooldown_until": 0, "planned_idx": None}
+                            _throttle_state[ip] = {"profile_idx": 0, "last_action": 0, "mode": "thermal", "cooldown_until": 0, "planned_idx": None, "real_hash": {}}
                     except Exception as e:
                         print(f"[!] Failed to load throttle profile for {ip}: {e}")
         _throttle_loaded = True
         print(f"[*] Auto-throttle: {len(_throttle_profiles)} ASICs with profiles loaded (all start at idx=0)")
 
-def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_mode=0):
+def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_mode=0, current_hashrate=0):
     with _throttle_disabled_lock:
         if ip in _throttle_disabled:
             return
@@ -272,11 +267,24 @@ def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_m
 
     ambient = _ambient_offset()
     eff_high = THROTTLE_HIGH - ambient
-    eff_perf = THROTTLE_PERF_TEMP - ambient
     eff_low = THROTTLE_LOW - ambient
-    eff_perf_exit = (THROTTLE_PERF_TEMP + 3) - ambient
 
-    # --- Overheat (temp high OR firmware safemode) -> reset, restart, cooldown ---
+    # --- Hashrate collection (stable on current profile for >30s) ---
+    if current_hashrate > 0 and idx >= 0:
+        dwell = state.get("dwell_start", 0)
+        if dwell == 0:
+            state["dwell_start"] = now
+        elif (now - dwell) > 30:
+            rh = state["real_hash"].setdefault(idx, {"count": 0, "total": 0, "max": 0, "temp_sum": 0, "avg_temp": 0})
+            rh["count"] += 1
+            rh["total"] += current_hashrate
+            if current_hashrate > rh["max"]:
+                rh["max"] = current_hashrate
+            rh["temp_sum"] += current_temp
+            rh["avg_temp"] = rh["temp_sum"] / rh["count"]
+            state["dwell_start"] = now
+
+    # --- Overheat (hard safety) -> reset, restart, cooldown ---
     overheat = current_temp >= eff_high or overheat_mode == 1
     if overheat:
         mode = "thermal"
@@ -284,63 +292,43 @@ def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_m
         idx = 0
         cooldown = max(cooldown, now + THROTTLE_OVERHEAT_COOLDOWN)
 
-    # --- Performance mode (no recent overheat, cool enough) ---
-    if not overheat and current_temp < eff_perf and mode != "performance" and now >= cooldown:
-        perf_list = _throttle_perf.get(ip)
-        if perf_list:
-            idx = 0
-            mode = "performance"
-        else:
-            idx = 0
-            mode = "thermal"
-            needs_restart = True
-
-    # --- Graceful exit from performance mode when temp rises ---
-    if mode == "performance" and current_temp >= eff_perf_exit:
-        mode = "thermal"
-        perf_list = _throttle_perf.get(ip, [])
-        p_idx = state["profile_idx"]
-        if p_idx < len(perf_list):
-            pf = perf_list[p_idx].get("frequency", 400)
-            pv = perf_list[p_idx].get("coreVoltage", 1150)
-            for i, p in enumerate(profiles):
-                if abs(p.get("frequency",0)-pf) <= 5 and abs(p.get("coreVoltage",0)-pv) <= 10:
-                    idx = i
-                    break
-            else:
-                idx = 0
-        else:
-            idx = 0
-        needs_restart = False
-
-    # --- First ever cycle: always apply idx=0 (no restart, PATCH alone takes effect, unless overheat) ---
+    # --- First ever cycle: always apply idx=0 (no restart) ---
     if state["last_action"] == 0 and not overheat:
         idx = 0
         needs_restart = False
 
-    # --- Thermal mode ramp-up (dynamic speed based on headroom) ---
-    if mode == "thermal" and not needs_restart and current_temp <= eff_low and idx < len(profiles) - 1:
-        planned = state.get("planned_idx")
-        if planned is not None and planned != idx:
-            # Planner suggests a different profile — jump to it directly (both up and down)
-            idx = max(0, min(planned, len(profiles) - 1))
-            needs_restart = False
+    # --- Real-hashrate optimizer (pick best proven profile within safe temp) ---
+    if not overheat and state["last_action"] > 0 and now >= cooldown:
+        safe_max_temp = eff_high - 3
+        candidates = [(i, rh["max"]) for i, rh in state["real_hash"].items()
+                      if rh["count"] >= 3 and rh["avg_temp"] <= safe_max_temp]
+        if candidates:
+            candidates.sort(key=lambda x: -x[1])
+            best = candidates[0][0]
+            if best != idx:
+                idx = best
+                needs_restart = False
+            elif current_temp <= eff_low and best < len(profiles) - 1:
+                # Explore next profile to collect more data
+                nxt = best + 1
+                if nxt not in state["real_hash"] or state["real_hash"][nxt]["count"] < 3:
+                    if (now - state.get("explore_ts", 0)) > 600:
+                        idx = nxt
+                        state["explore_ts"] = now
         else:
-            headroom = eff_high - current_temp
-            if headroom >= 15:
-                min_cooldown = 60
-                step = 3
-            elif headroom >= 10:
-                min_cooldown = 120
-                step = 2
-            elif headroom >= 5:
-                min_cooldown = THROTTLE_RAMP_COOLDOWN
-                step = 1
-            else:
-                min_cooldown = 999999
-                step = 0
-            if step and (now - state["last_action"]) >= min_cooldown:
-                idx = min(idx + step, len(profiles) - 1)
+            # Insufficient real data — gentle ramp to explore
+            if current_temp <= eff_low and idx < len(profiles) - 1:
+                headroom = eff_high - current_temp
+                if headroom >= 15:
+                    min_cooldown, step = 60, 3
+                elif headroom >= 10:
+                    min_cooldown, step = 120, 2
+                elif headroom >= 5:
+                    min_cooldown, step = THROTTLE_RAMP_COOLDOWN, 1
+                else:
+                    min_cooldown, step = 999999, 0
+                if step and (now - state["last_action"]) >= min_cooldown:
+                    idx = min(idx + step, len(profiles) - 1)
 
     needs_update = (idx != state["profile_idx"] or mode != state.get("mode") or needs_restart)
     if not needs_update:
@@ -348,12 +336,7 @@ def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_m
             state["cooldown_until"] = cooldown
         return
 
-    # Build target profile
-    if mode == "performance":
-        perf_list = _throttle_perf.get(ip, [])
-        profile = perf_list[idx] if idx < len(perf_list) else profiles[-1]
-    else:
-        profile = profiles[idx]
+    profile = profiles[idx]
     freq = int(profile.get("frequency", 400))
     volt = int(profile.get("coreVoltage", 1150))
 
@@ -378,7 +361,7 @@ def _apply_throttle(ip, current_temp, current_freq=0, current_volt=0, overheat_m
         resp = urlopen(req, timeout=BITAXE_API_TIMEOUT)
         status = resp.getcode()
         is_init = (state["last_action"] == 0)
-        label = "perf" if mode == "performance" else ("safemode" if overheat_mode == 1 else ("overheat" if current_temp >= eff_high else ("init" if is_init else "up")))
+        label = "safemode" if overheat_mode == 1 else ("overheat" if current_temp >= eff_high else ("init" if is_init else "opt"))
         print(f"[*] Throttle {label} {ip} ({current_temp:.0f}C) -> {mode} idx={idx} {freq}MHz @ {volt}mV (HTTP {status})", flush=True)
         if needs_restart:
             time.sleep(1)
@@ -988,7 +971,7 @@ def fetch_all_data():
         data = fetch_bitaxe(m["ip"])
         ip = m["ip"]
         if not data.get("error") and data.get("temp", -1) >= 0:
-            _apply_throttle(ip, data["temp"], data.get("frequency", 0), data.get("core_voltage", 0), data.get("overheat_mode", 0))
+            _apply_throttle(ip, data["temp"], data.get("frequency", 0), data.get("core_voltage", 0), data.get("overheat_mode", 0), data.get("hashrate", 0))
         with _throttle_lock:
             s = _throttle_state.get(ip)
             data["throttle_flash"] = 1 if s and (time.time() - s["last_action"]) < 3 else 0
@@ -1156,25 +1139,28 @@ HTML = """<!DOCTYPE html>
 <title>Bitaxe Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231a2e3f'/><text x='16' y='22' text-anchor='middle' font-size='20' font-family='monospace' font-weight='bold' fill='%233498db'>B</text></svg>">
 <style>
+  @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700;900&display=swap');
   :root {
-    --bg: #0b1219; --surface: #15202b; --surface2: #1c2d3f; --surface3: #243b51;
-    --text: #e8edf2; --text2: #94a8b8; --text3: #5a7a94;
-    --accent: #f7931a; --accent2: #ffab3a;
-    --green: #2ecc71; --yellow: #f39c12; --red: #e74c3c; --blue: #3498db;
-    --radius: 10px; --shadow: 0 2px 10px rgba(0,0,0,.4);
+    --bg: #08080f; --surface: #0f0f1f; --surface2: #181830; --surface3: #222248;
+    --text: #eef0ff; --text2: #8888cc; --text3: #5555aa;
+    --accent: #00f0ff; --accent2: #33f5ff;
+    --green: #00ff88; --yellow: #ffdd00; --red: #ff0055; --blue: #3366ff;
+    --radius: 10px; --shadow: 0 2px 10px rgba(0,0,0,.6);
+    --glow-cyan: 0 0 12px rgba(0,240,255,.4);
+    --glow-magenta: 0 0 12px rgba(255,0,85,.4);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  body { font-family: 'Orbitron', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
          background: var(--bg); color: var(--text); min-height: 100vh; }
 
   /* Header */
-  .header { background: linear-gradient(135deg, var(--surface) 0%, #1a2e3f 100%);
+  .header { background: linear-gradient(135deg, var(--surface) 0%, #0a0a1a 100%);
             border-bottom: 1px solid rgba(255,255,255,.05); padding: 14px 28px;
             display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
   .header-left { display: flex; align-items: center; gap: 18px; }
   .header-left h1 { font-size: 1.2rem; font-weight: 700; display: flex; align-items: center; gap: 10px;
                      letter-spacing: -.3px; }
-  .header-left h1 .btc { color: var(--accent); }
+  .header-left h1 .btc { color: var(--accent); text-shadow: var(--glow-cyan); }
   .header-status { font-size: .72rem; color: var(--text3); }
 
   /* Global nav */
@@ -1184,7 +1170,7 @@ HTML = """<!DOCTYPE html>
                           cursor: pointer; border-bottom: 2px solid transparent; transition: all .15s;
                           user-select: none; }
   .global-nav .nav-item:hover { color: var(--text); }
-  .global-nav .nav-item.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .global-nav .nav-item.active { color: var(--accent); border-bottom-color: var(--accent); text-shadow: var(--glow-cyan); }
   .global-nav .nav-item.kiosk { color: var(--green); }
   .global-nav .nav-item.kiosk.active { color: var(--green); border-bottom-color: var(--green); }
 
@@ -1204,7 +1190,7 @@ HTML = """<!DOCTYPE html>
 
   /* Kiosk hero */
 .kiosk-wrap { display: flex; align-items: center; justify-content: center; min-height: calc(100vh - 140px); }
-.kiosk-hero { background: var(--surface); border-radius: 20px; padding: 40px 48px;
+.kiosk-hero { background: var(--surface); border-radius: 20px; padding: 40px 48px; border: 1px solid rgba(0,240,255,.08);
               box-shadow: 0 8px 40px rgba(0,0,0,.5); border: 1px solid rgba(255,255,255,.06);
               text-align: center; max-width: 600px; width: 100%; position: relative; overflow: hidden; }
 .kiosk-hero .hero-bg-hash { font-size: 10rem; }
@@ -1225,49 +1211,49 @@ HTML = """<!DOCTYPE html>
 }
 
 /* Hero card */
-  .hero { background: var(--surface); border-radius: var(--radius); padding: 20px;
+  .hero { background: var(--surface); border-radius: var(--radius); padding: 20px; border: 1px solid rgba(0,240,255,.08);
           box-shadow: var(--shadow); cursor: pointer; transition: all .2s;
           border: 1px solid rgba(255,255,255,.04); position: relative; overflow: hidden; }
   .hero:hover { transform: translateY(-3px); box-shadow: 0 8px 28px rgba(0,0,0,.5);
     border-color: rgba(255,255,255,.05); }
   .hero:active { transform: translateY(-1px); }
   .hero.offline { opacity: .5; }
-  .hero.milestone { background: linear-gradient(135deg, #1a4f73, #3a8fc4); }
-  .hero.gold { background: linear-gradient(135deg, #3d2e00, #c99000); }
-  .hero.block { background: linear-gradient(135deg, #3d0000, #8b0000); }
+  .hero.milestone { background: linear-gradient(135deg, #001a33, #0066ff); box-shadow: 0 0 20px rgba(0,102,255,.3); }
+  .hero.gold { background: linear-gradient(135deg, #332800, #ffdd00); box-shadow: 0 0 20px rgba(255,221,0,.3); }
+  .hero.block { background: linear-gradient(135deg, #330011, #ff0055); box-shadow: 0 0 20px rgba(255,0,85,.3); }
   .hero.throttle { animation: throttle-flash .35s ease 3; }
   @keyframes throttle-flash { 0%,100%{opacity:1} 50%{opacity:.12} }
   .hero.thr-off { outline: 2px solid var(--red); outline-offset: -2px; }
   .hero.bench { outline: 2px solid var(--yellow); outline-offset: -2px; }
-  .new-asic-banner { background: rgba(255,193,7,.12); border: 1px solid rgba(255,193,7,.3); border-radius: 5px; padding: 6px 8px; margin-top: 6px; font-size: .72rem; color: var(--yellow); line-height: 1.5; }
+  .new-asic-banner { background: rgba(255,221,0,.08); border: 1px solid rgba(255,221,0,.25); border-radius: 5px; padding: 6px 8px; margin-top: 6px; font-size: .72rem; color: var(--yellow); line-height: 1.5; }
   .new-asic-banner a { color: #f0c040; text-decoration: underline; cursor: pointer; }
   .new-asic-banner a:hover { color: #ffd700; }
-  .kiosk-hero.milestone { background: linear-gradient(135deg, #1a4f73, #3a8fc4); }
-  .kiosk-hero.gold { background: linear-gradient(135deg, #3d2e00, #c99000); }
-  .kiosk-hero.block { background: linear-gradient(135deg, #3d0000, #8b0000); }
+  .kiosk-hero.milestone { background: linear-gradient(135deg, #001a33, #0066ff); box-shadow: 0 0 20px rgba(0,102,255,.3); }
+  .kiosk-hero.gold { background: linear-gradient(135deg, #332800, #ffdd00); box-shadow: 0 0 20px rgba(255,221,0,.3); }
+  .kiosk-hero.block { background: linear-gradient(135deg, #330011, #ff0055); box-shadow: 0 0 20px rgba(255,0,85,.3); }
   .kiosk-hero.throttle { animation: throttle-flash .35s ease 3; }
   .kiosk-hero.thr-off { outline: 2px solid var(--red); outline-offset: -2px; }
   .kiosk-hero.bench { outline: 2px solid var(--yellow); outline-offset: -2px; }
   #confetti-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 9999; }
   #block-toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
-    background: linear-gradient(135deg, #3d0000, #8b0000); border: 2px solid #c99000;
-    color: #ffd700; font-size: 2.5rem; font-weight: 900; padding: 24px 48px;
-    border-radius: 16px; z-index: 10000; display: none; text-align: center;
-    box-shadow: 0 0 60px rgba(255,215,0,.3); animation: pulse 1.5s infinite; }
-  #block-toast small { display: block; font-size: 1rem; color: #ccc; margin-top: 8px; font-weight: 400; }
+    z-index: 9999; background: rgba(0,0,0,.95); border: 2px solid var(--red);
+    border-radius: 20px; padding: 40px 60px; text-align: center; font-size: 2rem; font-weight: 700;
+    color: var(--red); cursor: pointer;
+    box-shadow: 0 0 60px rgba(255,0,85,.3); animation: pulse 1.5s infinite; }
+  #block-toast small { display: block; font-size: 1rem; color: var(--text2); margin-top: 8px; font-weight: 400; }
   @keyframes pulse { 0%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.05)} 100%{transform:translate(-50%,-50%) scale(1)} }
   .hero-top { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
   .hero-status { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-  .hero-status.on { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .hero-status.off { background: var(--red); box-shadow: 0 0 8px var(--red); }
+  .hero-status.on { background: var(--green); box-shadow: 0 0 12px var(--green); }
+  .hero-status.off { background: var(--red); box-shadow: 0 0 12px var(--red); }
   .hero-name { font-size: 1rem; font-weight: 600; flex: 1; }
   .hero-model { font-size: .65rem; color: var(--text3); text-transform: uppercase; letter-spacing: .5px; }
 
-  .hero-hr { font-size: 1.8rem; font-weight: 800; line-height: 1; margin-bottom: 6px; }
+  .hero-hr { font-size: 1.8rem; font-weight: 800; line-height: 1; margin-bottom: 6px; text-shadow: var(--glow-cyan); }
   .hero-hr .unit { font-size: .85rem; font-weight: 400; color: var(--text3); }
   .hero-stats { display: flex; gap: 16px; margin-top: 10px; }
   .hero-stat .hs-label { font-size: .62rem; color: var(--text3); text-transform: uppercase; }
-  .hero-stat .hs-value { font-size: .85rem; font-weight: 600; }
+  .hero-stat .hs-value { font-size: .85rem; font-weight: 600; text-shadow: 0 0 6px rgba(0,240,255,.2); }
 
   .hero-bg-hash { position: absolute; right: -10px; bottom: -10px; font-size: 6rem; font-weight: 900;
                   color: rgba(247,147,26,.04); line-height: 1; pointer-events: none; user-select: none; }
@@ -1293,7 +1279,7 @@ HTML = """<!DOCTYPE html>
   /* Metric cards in detail */
   .metric-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px;
                  margin-bottom: 18px; }
-  .metric-card { background: var(--surface); border-radius: var(--radius); padding: 14px 16px;
+  .metric-card { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; border: 1px solid rgba(0,240,255,.06);
                  border: 1px solid rgba(255,255,255,.03); }
   .metric-card .mc-label { font-size: .65rem; color: var(--text3); text-transform: uppercase; letter-spacing: .4px; }
   .metric-card .mc-value { font-size: 1.15rem; font-weight: 700; margin-top: 2px; }
@@ -1308,8 +1294,8 @@ HTML = """<!DOCTYPE html>
          cursor: pointer; transition: all .12s; display: inline-flex; align-items: center; gap: 6px; }
   .btn:active { transform: scale(.96); }
   .btn:disabled { opacity: .35; cursor: not-allowed; transform: none; }
-  .btn-primary { background: var(--accent); color: #000; }
-  .btn-primary:hover { background: var(--accent2); }
+  .btn-primary { background: var(--accent); color: #000; box-shadow: 0 0 10px rgba(0,240,255,.3); }
+  .btn-primary:hover { background: var(--accent2); box-shadow: 0 0 16px rgba(0,240,255,.5); }
   .btn-danger { background: var(--red); color: #fff; }
   .btn-danger:hover { opacity: .85; }
   .btn-secondary { background: var(--surface3); color: var(--text); }
@@ -1323,7 +1309,7 @@ HTML = """<!DOCTYPE html>
 
   /* Form controls */
   .form-group { background: var(--surface); border-radius: var(--radius); padding: 16px;
-                margin-bottom: 12px; border: 1px solid rgba(255,255,255,.03); }
+                 margin-bottom: 12px; border: 1px solid rgba(0,240,255,.06); }
   .form-group-title { font-size: .75rem; color: var(--text2); text-transform: uppercase; letter-spacing: .5px;
                        margin-bottom: 12px; font-weight: 600; }
   .form-row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
@@ -1341,10 +1327,10 @@ HTML = """<!DOCTYPE html>
 
   /* Status badge */
   .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: .7rem; font-weight: 600; }
-  .badge-green { background: rgba(46,204,113,.15); color: var(--green); }
-  .badge-red { background: rgba(231,76,60,.15); color: var(--red); }
-  .badge-yellow { background: rgba(243,156,18,.15); color: var(--yellow); }
-  .badge-blue { background: rgba(52,152,219,.15); color: var(--blue); }
+  .badge-green { background: rgba(0,255,136,.12); color: var(--green); }
+  .badge-red { background: rgba(255,0,85,.12); color: var(--red); }
+  .badge-yellow { background: rgba(255,221,0,.12); color: var(--yellow); }
+  .badge-blue { background: rgba(51,102,255,.12); color: var(--blue); }
 
   /* Toast */
   .toast-container { position: fixed; top: 14px; right: 14px; z-index: 9999;
@@ -1352,9 +1338,9 @@ HTML = """<!DOCTYPE html>
   .toast { padding: 10px 20px; border-radius: var(--radius); font-size: .82rem; font-weight: 500;
            box-shadow: 0 4px 16px rgba(0,0,0,.5); animation: slideIn .2s ease; max-width: 380px;
            backdrop-filter: blur(8px); }
-  .toast.success { background: rgba(46,204,113,.9); color: #000; }
-  .toast.error { background: rgba(231,76,60,.9); color: #fff; }
-  .toast.info { background: rgba(52,152,219,.85); color: #fff; }
+  .toast.success { background: rgba(0,255,136,.85); color: #000; }
+  .toast.error { background: rgba(255,0,85,.85); color: #fff; }
+  .toast.info { background: rgba(0,240,255,.85); color: #000; }
   @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
   .footer { text-align: center; padding: 24px; font-size: .7rem; color: var(--text3); }
@@ -1436,7 +1422,6 @@ HTML = """<!DOCTYPE html>
       <div class="form-row"><label>Ambient offset &deg;C</label><input type="number" id="setAmbientOffset" value="-1" min="-1" max="20" style="width:60px"></div>
       <div style="font-size:.7rem;color:var(--text3);margin-top:-6px;margin-bottom:12px">&#8722;1 = auto from weather, 0&#8211;20 = manual offset</div>
       <div class="form-row"><label>Throttle high &deg;C</label><input type="number" id="setThrottleHigh" min="40" max="80" style="width:60px"></div>
-      <div class="form-row"><label>Throttle perf &deg;C</label><input type="number" id="setThrottlePerf" min="30" max="70" style="width:60px"></div>
       <div class="form-row"><label>Throttle low &deg;C</label><input type="number" id="setThrottleLow" min="35" max="75" style="width:60px"></div>
     </div>
     <div class="form-group">
@@ -1910,7 +1895,6 @@ function loadSettings() {
     else msg.textContent = s.weather_lat && s.weather_lon ? 'Coordinates set directly' : 'Enter city and click Resolve';
     document.getElementById('setAmbientOffset').value = s.ambient_offset != null ? s.ambient_offset : -1;
     document.getElementById('setThrottleHigh').value = s.throttle_high || 59;
-    document.getElementById('setThrottlePerf').value = s.throttle_perf_temp || 45;
     document.getElementById('setThrottleLow').value = s.throttle_low || 52;
     document.getElementById('setBenchDuration').value = s.benchmark_duration || 180;
     document.getElementById('setBenchInterval').value = s.benchmark_sample_interval || 1;
@@ -1958,7 +1942,7 @@ function saveSettings() {
     weather_lon: document.getElementById('setWeatherLon').value.trim(),
     ambient_offset: parseInt(document.getElementById('setAmbientOffset').value) || -1,
     throttle_high: parseInt(document.getElementById('setThrottleHigh').value) || 59,
-    throttle_perf_temp: parseInt(document.getElementById('setThrottlePerf').value) || 45,
+
     throttle_low: parseInt(document.getElementById('setThrottleLow').value) || 52,
     benchmark_duration: parseInt(document.getElementById('setBenchDuration').value) || 180,
     benchmark_sample_interval: parseInt(document.getElementById('setBenchInterval').value) || 1,
