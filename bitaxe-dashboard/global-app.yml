@@ -1,0 +1,32 @@
+manifestVersion: 1
+id: bitaxe-dashboard
+category: bitcoin
+name: Bitaxe Dashboard
+version: "1.1.0"
+tagline: Bitaxe ASIC fleet dashboard with auto-throttle & benchmark
+icon: icon.png
+description: >-
+  Web dashboard for monitoring and managing Bitaxe ASIC miners.
+
+
+  Features:
+  - Real-time telemetry & hashrate monitoring
+  - Auto-throttling based on temperature
+  - Performance benchmark with hill-climbing algorithm
+  - 24h predictive planning using weather forecasts
+  - ASIC auto-discovery via subnet scan
+  - History logging with SQLite
+
+
+  Automatically discovers ASICs on your LAN, profiles their
+  performance at different frequency/voltage settings, and
+  dynamically adjusts them to balance hashrate vs temperature.
+developer: Crypto13Vault
+website: https://github.com/Crypto13Vault/5tratumos-store
+support: https://github.com/Crypto13Vault/5tratumos-store/issues
+dependencies: []
+port: 5050
+gallery: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""
