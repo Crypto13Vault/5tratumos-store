@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="neon_cyan">#00F0FF</color>
+    <color name="neon_magenta">#FF0055</color>
+    <color name="neon_green">#00FF88</color>
+    <color name="bg_dark">#08080F</color>
+    <color name="surface">#0F0F1F</color>
+    <color name="surface2">#181830</color>
+    <color name="text_primary">#EEF0FF</color>
+    <color name="text_secondary">#8888CC</color>
+</resources>

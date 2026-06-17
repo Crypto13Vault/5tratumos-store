@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="@color/bg_dark">
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Connection"
+        android:textSize="18sp"
+        android:textColor="@color/neon_cyan"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:id="@+id/tvConnectionInfo"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Not paired"
+        android:textSize="14sp"
+        android:textColor="@color/text_primary"
+        android:layout_marginBottom="16dp" />
+
+    <Button
+        android:id="@+id/btnPair"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/pair_device"
+        android:backgroundTint="@color/neon_cyan"
+        android:textColor="@color/bg_dark"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/btnReconnect"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/reconnect"
+        android:backgroundTint="@color/surface2"
+        android:textColor="@color/text_primary"
+        android:layout_marginBottom="8dp" />
+
+    <Button
+        android:id="@+id/btnRevoke"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/revoke_device"
+        android:backgroundTint="@color/neon_magenta"
+        android:textColor="@color/text_primary"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="About"
+        android:textSize="18sp"
+        android:textColor="@color/neon_cyan"
+        android:textStyle="bold"
+        android:layout_marginBottom="12dp" />
+
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Bitaxe Dashboard Mobile v1.0.0"
+        android:textSize="12sp"
+        android:textColor="@color/text_secondary" />
+
+</LinearLayout>

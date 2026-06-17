@@ -14,7 +14,15 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from urllib.request import urlopen, Request, URLError
 import urllib.parse
 
-from flask import Flask, jsonify, render_template_string, request
+from flask import Flask, jsonify, render_template_string, request, Response, stream_with_context
+
+import base64
+import hashlib
+import hmac
+import io
+import queue
+import secrets
+import subprocess
 
 app = Flask(__name__)
 
@@ -176,6 +184,131 @@ _throttle_loaded = False
 _throttle_lock = threading.Lock()
 _throttle_disabled = set()
 _throttle_disabled_lock = threading.Lock()
+
+# --- Mobile App: Pairing, Auth, SSE, FCM ---
+_PAIR_TOKENS = {}
+_PAIR_TOKENS_LOCK = threading.Lock()
+_PAIR_TOKEN_TTL = 300  # 5 minutes
+
+_PAIRED_DEVICES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "paired_devices.json")
+_PAIRED_DEVICES = {}
+_PAIRED_DEVICES_LOCK = threading.Lock()
+
+_FCM_TOKENS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "fcm_tokens.json")
+_FCM_TOKENS = {}
+_FCM_TOKENS_LOCK = threading.Lock()
+
+_SSE_CLIENTS = []
+_SSE_LOCK = threading.Lock()
+
+_PAIR_SECRET = secrets.token_hex(32)
+
+_PUSHED_BLOCKS = set()
+_PUSHED_OVERHEAT = {}
+_PUSH_LOCK = threading.Lock()
+
+def _tailscale_ip():
+    try:
+        out = subprocess.check_output(["tailscale", "ip", "-4"], timeout=3, stderr=subprocess.DEVNULL).decode().strip()
+        return out.split()[0] if out else None
+    except Exception:
+        return None
+
+def _load_paired_devices():
+    global _PAIRED_DEVICES
+    with _PAIRED_DEVICES_LOCK:
+        try:
+            if os.path.exists(_PAIRED_DEVICES_FILE):
+                with open(_PAIRED_DEVICES_FILE) as f:
+                    _PAIRED_DEVICES = json.load(f)
+        except Exception:
+            _PAIRED_DEVICES = {}
+
+def _save_paired_devices():
+    with _PAIRED_DEVICES_LOCK:
+        os.makedirs(os.path.dirname(_PAIRED_DEVICES_FILE), exist_ok=True)
+        with open(_PAIRED_DEVICES_FILE, "w") as f:
+            json.dump(_PAIRED_DEVICES, f, indent=2)
+
+def _load_fcm_tokens():
+    global _FCM_TOKENS
+    with _FCM_TOKENS_LOCK:
+        try:
+            if os.path.exists(_FCM_TOKENS_FILE):
+                with open(_FCM_TOKENS_FILE) as f:
+                    _FCM_TOKENS = json.load(f)
+        except Exception:
+            _FCM_TOKENS = {}
+
+def _save_fcm_tokens():
+    with _FCM_TOKENS_LOCK:
+        os.makedirs(os.path.dirname(_FCM_TOKENS_FILE), exist_ok=True)
+        with open(_FCM_TOKENS_FILE, "w") as f:
+            json.dump(_FCM_TOKENS, f, indent=2)
+
+def _generate_pair_token():
+    token = secrets.token_urlsafe(24)
+    with _PAIR_TOKENS_LOCK:
+        _PAIR_TOKENS[token] = time.time() + _PAIR_TOKEN_TTL
+    return token
+
+def _validate_pair_token(token):
+    with _PAIR_TOKENS_LOCK:
+        expiry = _PAIR_TOKENS.pop(token, None)
+    if expiry and time.time() < expiry:
+        return True
+    return False
+
+def _generate_session_key():
+    return secrets.token_hex(24)
+
+def _check_auth():
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        key = auth[7:]
+        with _PAIRED_DEVICES_LOCK:
+            if key in _PAIRED_DEVICES:
+                return True
+    return False
+
+def _sse_broadcast(event_type, data):
+    payload = json.dumps({"type": event_type, "data": data})
+    with _SSE_LOCK:
+        dead = []
+        for q in _SSE_CLIENTS:
+            try:
+                q.put_nowait(payload)
+            except queue.Full:
+                dead.append(q)
+        for q in dead:
+            _SSE_CLIENTS.remove(q)
+
+def _send_fcm_push(title, body, data=None):
+    try:
+        import firebase_admin.messaging as messaging
+        with _FCM_TOKENS_LOCK:
+            tokens = list(_FCM_TOKENS.keys())
+        if not tokens:
+            return
+        msg = messaging.Message(
+            notification=messaging.Notification(title=title, body=body),
+            data=data or {},
+        )
+        for token in tokens:
+            msg.token = token
+            try:
+                messaging.send(msg)
+                print(f"[*] FCM push sent: {title}", flush=True)
+            except Exception as e:
+                if "not registered" in str(e).lower() or "unregistered" in str(e).lower():
+                    with _FCM_TOKENS_LOCK:
+                        _FCM_TOKENS.pop(token, None)
+                    _save_fcm_tokens()
+                print(f"[!] FCM push failed: {e}", flush=True)
+    except ImportError:
+        pass  # firebase-admin not installed
+    except Exception as e:
+        print(f"[!] FCM push error: {e}", flush=True)
 
 def _fetch_ambient_forecast():
     try:
@@ -994,7 +1127,31 @@ def fetch_all_data():
         data["needs_benchmark"] = 1 if (not has_profile and not has_history and not dismissed) else 0
         miners.append({**m, **data})
     pool = compute_pool_stats(miners)
-    return {"miners": miners, "pool": pool, "fetched_at": time.time()}
+    result = {"miners": miners, "pool": pool, "fetched_at": time.time()}
+
+    # --- Push triggers: block found & overheat ---
+    with _PUSH_LOCK:
+        for m in miners:
+            ip = m.get("ip", "")
+            hostname = m.get("hostname", ip)
+            # Block found detection
+            if m.get("best_session_diff", 0) >= (m.get("network_diff", 1) or 1):
+                if ip not in _PUSHED_BLOCKS:
+                    _PUSHED_BLOCKS.add(ip)
+                    _sse_broadcast("block_found", {"miner": hostname, "ip": ip, "diff": m["best_session_diff"]})
+                    _send_fcm_push("BLOCK FOUND!", f"{hostname} found a block!", {"ip": ip, "type": "block"})
+            else:
+                _PUSHED_BLOCKS.discard(ip)
+            # Overheat detection
+            temp = m.get("temp", 0)
+            if temp >= THROTTLE_HIGH:
+                last_push = _PUSHED_OVERHEAT.get(ip, 0)
+                if time.time() - last_push > 300:  # suppress for 5 min
+                    _PUSHED_OVERHEAT[ip] = time.time()
+                    _sse_broadcast("overheat", {"miner": hostname, "ip": ip, "temp": temp})
+                    _send_fcm_push("OVERHEAT", f"{hostname} at {temp:.0f}°C", {"ip": ip, "type": "overheat", "temp": str(temp)})
+
+    return result
 
 _cache = {"data": None, "ts": 0, "lock": threading.Lock()}
 
@@ -1130,6 +1287,137 @@ def api_restart():
     thread = threading.Thread(target=lambda: (time.sleep(1), os._exit(0)), daemon=True)
     thread.start()
     return jsonify({"ok": True, "message": "Restarting..."})
+
+# --- Mobile App: Auth Middleware ---
+
+@app.before_request
+def auth_check():
+    exempt = {"/", "/api/pair/generate", "/api/pair/exchange", "/api/events"}
+    if request.path in exempt:
+        return None
+    if request.path.startswith("/static"):
+        return None
+    if not _check_auth():
+        return jsonify({"error": "Unauthorized", "code": 401}), 401
+
+# --- Mobile App: Pair Endpoints ---
+
+@app.route("/api/pair/generate")
+def api_pair_generate():
+    import qrcode
+    ts_ip = _tailscale_ip()
+    if not ts_ip:
+        return jsonify({"ok": False, "error": "Tailscale not running. Install and connect Tailscale first."})
+    port = 5050
+    token = _generate_pair_token()
+    qr_data = f"bitaxe://pair?host={ts_ip}&port={port}&token={token}"
+    qr = qrcode.QRCode(version=1, box_size=10, border=2)
+    qr.add_data(qr_data)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    qr_b64 = base64.b64encode(buf.read()).decode()
+    return jsonify({
+        "ok": True,
+        "host": ts_ip,
+        "port": port,
+        "token": token,
+        "qr_data_url": f"data:image/png;base64,{qr_b64}",
+        "qr_payload": qr_data,
+    })
+
+@app.route("/api/pair/exchange", methods=["POST"])
+def api_pair_exchange():
+    data = request.get_json(force=True, silent=True) or {}
+    token = data.get("token", "")
+    if not _validate_pair_token(token):
+        return jsonify({"ok": False, "error": "Invalid or expired token"})
+    session_key = _generate_session_key()
+    device_name = data.get("device_name", "Unknown")
+    with _PAIRED_DEVICES_LOCK:
+        _PAIRED_DEVICES[session_key] = {
+            "name": device_name,
+            "paired_at": time.time(),
+            "last_seen": time.time(),
+        }
+    _save_paired_devices()
+    return jsonify({"ok": True, "session_key": session_key})
+
+@app.route("/api/pair/devices")
+def api_pair_devices():
+    with _PAIRED_DEVICES_LOCK:
+        devices = []
+        for key, info in _PAIRED_DEVICES.items():
+            devices.append({
+                "key": key[:8] + "...",
+                "name": info.get("name", "Unknown"),
+                "paired_at": info.get("paired_at", 0),
+                "last_seen": info.get("last_seen", 0),
+            })
+    return jsonify({"ok": True, "devices": devices})
+
+@app.route("/api/pair/revoke", methods=["POST"])
+def api_pair_revoke():
+    data = request.get_json(force=True, silent=True) or {}
+    key = data.get("key", "")
+    with _PAIRED_DEVICES_LOCK:
+        if key in _PAIRED_DEVICES:
+            del _PAIRED_DEVICES[key]
+    _save_paired_devices()
+    return jsonify({"ok": True})
+
+# --- Mobile App: SSE Events ---
+
+@app.route("/api/events")
+def api_events():
+    if not _check_auth():
+        ts_token = request.args.get("token", "")
+        if ts_token and _check_auth_token(ts_token):
+            pass
+        else:
+            return jsonify({"error": "Unauthorized"}), 401
+
+    def event_stream():
+        q = queue.Queue(maxsize=100)
+        with _SSE_LOCK:
+            _SSE_CLIENTS.append(q)
+        try:
+            while True:
+                try:
+                    payload = q.get(timeout=30)
+                    yield f"data: {payload}\n\n"
+                except queue.Empty:
+                    yield ": keepalive\n\n"
+        finally:
+            with _SSE_LOCK:
+                if q in _SSE_CLIENTS:
+                    _SSE_CLIENTS.remove(q)
+
+    return Response(stream_with_context(event_stream()),
+                    mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache",
+                             "X-Accel-Buffering": "no",
+                             "Connection": "keep-alive"})
+
+def _check_auth_token(token):
+    with _PAIRED_DEVICES_LOCK:
+        return token in _PAIRED_DEVICES
+
+# --- Mobile App: FCM ---
+
+@app.route("/api/fcm/register", methods=["POST"])
+def api_fcm_register():
+    data = request.get_json(force=True, silent=True) or {}
+    fcm_token = data.get("fcm_token", "")
+    device_name = data.get("device_name", "Unknown")
+    if not fcm_token:
+        return jsonify({"ok": False, "error": "No FCM token"})
+    with _FCM_TOKENS_LOCK:
+        _FCM_TOKENS[fcm_token] = {"name": device_name, "registered_at": time.time()}
+    _save_fcm_tokens()
+    return jsonify({"ok": True})
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -1429,6 +1717,24 @@ HTML = """<!DOCTYPE html>
       <div class="form-row"><label>Duration (s)</label><input type="number" id="setBenchDuration" min="10" max="3600" style="width:70px"></div>
       <div class="form-row"><label>Sample interval (s)</label><input type="number" id="setBenchInterval" min="1" max="30" style="width:60px"></div>
       <div class="form-row"><label>Stabilize (s)</label><input type="number" id="setBenchStabilize" min="0" max="300" style="width:60px"></div>
+    </div>
+    <div class="form-group">
+      <div class="form-group-title">Mobile App</div>
+      <div id="pairSection">
+        <button class="btn btn-primary" onclick="generatePairQR()" id="btnPairDevice">Pair Device</button>
+        <span id="pairStatus" style="font-size:.75rem;color:var(--text3);margin-left:10px"></span>
+      </div>
+      <div id="pairQRSection" style="display:none;margin-top:12px">
+        <div style="text-align:center">
+          <img id="pairQRImage" style="border-radius:8px;border:2px solid var(--accent);max-width:200px">
+          <div style="font-size:.7rem;color:var(--text3);margin-top:6px">Scan with Bitaxe mobile app</div>
+          <div id="pairHost" style="font-size:.75rem;color:var(--accent);margin-top:4px"></div>
+        </div>
+      </div>
+      <div id="pairedDevicesSection" style="margin-top:12px">
+        <div style="font-size:.75rem;color:var(--text3);margin-bottom:6px">Paired devices:</div>
+        <div id="pairedDevicesList" style="font-size:.75rem"></div>
+      </div>
     </div>
     <div style="display:flex;gap:10px;margin-top:16px">
       <button class="btn btn-success" onclick="saveSettings()" id="btnSaveSettings">Save</button>
@@ -1907,6 +2213,7 @@ function loadSettings() {
     document.getElementById('setBenchInterval').value = s.benchmark_sample_interval || 1;
     document.getElementById('setBenchStabilize').value = s.benchmark_stabilize_time || 30;
     toggleAutoDiscover();
+    loadPairedDevices();
   });
 }
 
@@ -1939,6 +2246,49 @@ function resolveCity() {
   });
 }
 
+// ========== MOBILE APP PAIRING ==========
+function generatePairQR() {
+  document.getElementById('pairStatus').textContent = 'Generating...';
+  fetch('api/pair/generate').then(r => r.json()).then(d => {
+    if (d.ok) {
+      document.getElementById('pairQRImage').src = d.qr_data_url;
+      document.getElementById('pairHost').textContent = d.host + ':' + d.port;
+      document.getElementById('pairQRSection').style.display = 'block';
+      document.getElementById('pairStatus').textContent = 'QR valid for 5 minutes';
+      loadPairedDevices();
+    } else {
+      document.getElementById('pairStatus').textContent = d.error;
+    }
+  }).catch(e => {
+    document.getElementById('pairStatus').textContent = 'Failed: ' + e.message;
+  });
+}
+
+function loadPairedDevices() {
+  fetch('api/pair/devices').then(r => r.json()).then(d => {
+    const list = document.getElementById('pairedDevicesList');
+    if (!d.devices || d.devices.length === 0) {
+      list.innerHTML = '<span style="color:var(--text3)">No paired devices</span>';
+      return;
+    }
+    list.innerHTML = d.devices.map(dev => {
+      const paired = new Date(dev.paired_at * 1000).toLocaleString();
+      const seen = new Date(dev.last_seen * 1000).toLocaleString();
+      return '<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--surface2)">' +
+        '<span style="flex:1">' + dev.name + ' <span style="color:var(--text3)">(' + dev.key + ')</span></span>' +
+        '<span style="color:var(--text3);font-size:.65rem">Paired: ' + paired + '</span>' +
+        '<button class="btn btn-sm btn-danger" onclick="revokeDevice(' + SQ + dev.key + SQ + ')" style="padding:1px 6px;font-size:.6rem">Revoke</button>' +
+        '</div>';
+    }).join('');
+  });
+}
+
+function revokeDevice(key) {
+  fetch('api/pair/revoke', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key})})
+    .then(r => r.json()).then(d => { if (d.ok) loadPairedDevices(); });
+}
+
+// ========== SETTINGS ==========
 function saveSettings() {
   const body = {
     static_ips: document.getElementById('setStaticIps').value.trim(),
@@ -2699,6 +3049,12 @@ if __name__ == "__main__":
     print(f"[*] Weather lat/lon: {WEATHER_LAT}/{WEATHER_LON}")
     _load_dismissed()
     print(f"[*] Dismissed bench set: {len(_needs_bench_dismissed)} ASICs")
+    _load_paired_devices()
+    print(f"[*] Paired devices: {len(_PAIRED_DEVICES)}")
+    _load_fcm_tokens()
+    print(f"[*] FCM tokens: {len(_FCM_TOKENS)}")
+    ts_ip = _tailscale_ip()
+    print(f"[*] Tailscale IP: {ts_ip or 'not detected'}")
     _fetch_ambient_forecast()
     t = threading.Thread(target=_log_history, daemon=True)
     t.start()

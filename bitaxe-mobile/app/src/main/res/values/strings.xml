@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bitaxe Dashboard</string>
+    <string name="pair_device">Pair Device</string>
+    <string name="scan_qr">Scan QR Code</string>
+    <string name="settings">Settings</string>
+    <string name="connected_to">Connected to</string>
+    <string name="not_paired">Not paired</string>
+    <string name="revoke_device">Revoke Device</string>
+    <string name="reconnect">Reconnect</string>
+    <string name="pairing_success">Successfully paired!</string>
+    <string name="pairing_failed">Pairing failed</string>
+    <string name="connection_error">Connection error</string>
+    <string name="block_found">BLOCK FOUND!</string>
+    <string name="overheat_alert">OVERHEAT ALERT</string>
+</resources>
