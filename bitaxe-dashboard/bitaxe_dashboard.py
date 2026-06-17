@@ -1238,7 +1238,7 @@ HTML = """<!DOCTYPE html>
   #block-toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
     z-index: 9999; background: rgba(0,0,0,.95); border: 2px solid var(--red);
     border-radius: 20px; padding: 40px 60px; text-align: center; font-size: 2rem; font-weight: 700;
-    color: var(--red); cursor: pointer;
+    color: var(--red); cursor: pointer; display: none;
     box-shadow: 0 0 60px rgba(255,0,85,.3); animation: pulse 1.5s infinite; }
   #block-toast small { display: block; font-size: 1rem; color: var(--text2); margin-top: 8px; font-weight: 400; }
   @keyframes pulse { 0%{transform:translate(-50%,-50%) scale(1)} 50%{transform:translate(-50%,-50%) scale(1.05)} 100%{transform:translate(-50%,-50%) scale(1)} }
@@ -1745,7 +1745,14 @@ let currentData = null;
 let currentMiner = null;
 let currentDetailIp = null;
 let _liveTemps = {};
+let _blockDismissed = {};
 const SQ = "'";
+
+function dismissBlock() {
+  document.getElementById('block-toast').style.display = 'none';
+  const name = document.getElementById('block-miner').textContent;
+  if (name) _blockDismissed[name] = true;
+}
 
 function toast(msg, type) {
   const c = document.getElementById('toastContainer');
@@ -2582,6 +2589,20 @@ function update() {
       }
     }
 
+    // Block-found detection
+    const toast = document.getElementById('block-toast');
+    let blockMiner = null;
+    (data.miners||[]).forEach(m => {
+      if (m.best_session_diff >= (m.network_diff || 1)) blockMiner = m.hostname || m.ip;
+    });
+    if (blockMiner && !_blockDismissed[blockMiner]) {
+      document.getElementById('block-miner').textContent = blockMiner;
+      toast.style.display = 'block';
+    } else if (!blockMiner) {
+      toast.style.display = 'none';
+      _blockDismissed = {};
+    }
+
     document.getElementById('fetchStatus').textContent = 'updated ' + ago(data.fetched_at);
     document.getElementById('serverTime').textContent = new Date().toLocaleTimeString();
     loadPlan();
@@ -2654,7 +2675,9 @@ function loadPlan() {
 document.addEventListener('DOMContentLoaded', () => { update(); setInterval(tick, 1000); });
 </script>
 <canvas id="confetti-canvas"></canvas>
-<div id="block-toast">&#127881; BLOCK FOUND &#127881;<small>By: <span id="block-miner"></span></small></div>
+<div id="block-toast" onclick="dismissBlock()">&#127881; BLOCK FOUND &#127881;
+  <span style="position:absolute;top:8px;right:14px;font-size:1.2rem;color:var(--text3);cursor:pointer">&times;</span>
+  <small>By: <span id="block-miner"></span></small></div>
 </body>
 </html>
 """
