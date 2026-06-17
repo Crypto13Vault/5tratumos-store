@@ -8,4 +8,4 @@ WORKDIR /app
 
 EXPOSE 5050
 
-CMD ["python", "bitaxe_dashboard.py", "--host", "0.0.0.0", "--port", "5050", "--refresh", "30"]
+CMD ["python", "bitaxe_dashboard.py", "--host", "0.0.0.0", "--port", "5050", "--refresh", "5"]
