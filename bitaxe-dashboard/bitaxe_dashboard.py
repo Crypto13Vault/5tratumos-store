@@ -246,22 +246,6 @@ def _save_paired_devices():
         with open(_PAIRED_DEVICES_FILE, "w") as f:
             json.dump(_PAIRED_DEVICES, f, indent=2)
 
-def _load_fcm_tokens():
-    global _FCM_TOKENS
-    with _FCM_TOKENS_LOCK:
-        try:
-            if os.path.exists(_FCM_TOKENS_FILE):
-                with open(_FCM_TOKENS_FILE) as f:
-                    _FCM_TOKENS = json.load(f)
-        except Exception:
-            _FCM_TOKENS = {}
-
-def _save_fcm_tokens():
-    with _FCM_TOKENS_LOCK:
-        os.makedirs(os.path.dirname(_FCM_TOKENS_FILE), exist_ok=True)
-        with open(_FCM_TOKENS_FILE, "w") as f:
-            json.dump(_FCM_TOKENS, f, indent=2)
-
 def _generate_pair_token():
     token = secrets.token_urlsafe(24)
     with _PAIR_TOKENS_LOCK:
@@ -298,54 +282,6 @@ def _sse_broadcast(event_type, data):
                 dead.append(q)
         for q in dead:
             _SSE_CLIENTS.remove(q)
-
-_FCM_INITIALIZED = False
-
-def _init_firebase():
-    global _FCM_INITIALIZED
-    if _FCM_INITIALIZED:
-        return
-    try:
-        import firebase_admin
-        cred_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "firebase-service-account.json")
-        if not os.path.exists(cred_path):
-            print(f"[!] Firebase: service account not found at {cred_path}")
-            return
-        cred = firebase_admin.credentials.Certificate(cred_path)
-        firebase_admin.initialize_app(cred)
-        _FCM_INITIALIZED = True
-        print("[*] Firebase initialized")
-    except Exception as e:
-        print(f"[!] Firebase init failed: {e}")
-
-def _send_fcm_push(title, body, data=None):
-    if not _FCM_INITIALIZED:
-        return
-    try:
-        import firebase_admin.messaging as messaging
-        with _FCM_TOKENS_LOCK:
-            tokens = list(_FCM_TOKENS.keys())
-        if not tokens:
-            return
-        msg = messaging.Message(
-            notification=messaging.Notification(title=title, body=body),
-            data=data or {},
-        )
-        for token in tokens:
-            msg.token = token
-            try:
-                messaging.send(msg)
-                print(f"[*] FCM push sent: {title}", flush=True)
-            except Exception as e:
-                if "not registered" in str(e).lower() or "unregistered" in str(e).lower():
-                    with _FCM_TOKENS_LOCK:
-                        _FCM_TOKENS.pop(token, None)
-                    _save_fcm_tokens()
-                print(f"[!] FCM push failed: {e}", flush=True)
-    except ImportError:
-        pass  # firebase-admin not installed
-    except Exception as e:
-        print(f"[!] FCM push error: {e}", flush=True)
 
 def _fetch_ambient_forecast():
     try:
@@ -1176,7 +1112,6 @@ def fetch_all_data():
                 if ip not in _PUSHED_BLOCKS:
                     _PUSHED_BLOCKS.add(ip)
                     _sse_broadcast("block_found", {"miner": hostname, "ip": ip, "diff": m["best_session_diff"]})
-                    _send_fcm_push("BLOCK FOUND!", f"{hostname} found a block!", {"ip": ip, "type": "block"})
             else:
                 _PUSHED_BLOCKS.discard(ip)
             # Overheat detection
@@ -1186,7 +1121,6 @@ def fetch_all_data():
                 if time.time() - last_push > 300:  # suppress for 5 min
                     _PUSHED_OVERHEAT[ip] = time.time()
                     _sse_broadcast("overheat", {"miner": hostname, "ip": ip, "temp": temp})
-                    _send_fcm_push("OVERHEAT", f"{hostname} at {temp:.0f}°C", {"ip": ip, "type": "overheat", "temp": str(temp)})
 
     return result
 
@@ -1329,10 +1263,12 @@ def api_restart():
 
 @app.before_request
 def auth_check():
-    exempt = {"/", "/api/pair/generate", "/api/pair/exchange", "/api/events"}
+    exempt = {"/", "/api/data", "/api/history", "/api/plan", "/api/settings",
+              "/api/pair/generate", "/api/pair/exchange", "/api/events",
+              "/api/benchmark", "/api/geocode", "/api/restart"}
     if request.path in exempt:
         return None
-    if request.path.startswith("/static"):
+    if request.path.startswith("/api/benchmark/") or request.path.startswith("/api/bitaxe/"):
         return None
     if not _check_auth():
         return jsonify({"error": "Unauthorized", "code": 401}), 401
@@ -1441,20 +1377,6 @@ def api_events():
 def _check_auth_token(token):
     with _PAIRED_DEVICES_LOCK:
         return token in _PAIRED_DEVICES
-
-# --- Mobile App: FCM ---
-
-@app.route("/api/fcm/register", methods=["POST"])
-def api_fcm_register():
-    data = request.get_json(force=True, silent=True) or {}
-    fcm_token = data.get("fcm_token", "")
-    device_name = data.get("device_name", "Unknown")
-    if not fcm_token:
-        return jsonify({"ok": False, "error": "No FCM token"})
-    with _FCM_TOKENS_LOCK:
-        _FCM_TOKENS[fcm_token] = {"name": device_name, "registered_at": time.time()}
-    _save_fcm_tokens()
-    return jsonify({"ok": True})
 
 HTML = """<!DOCTYPE html>
 <html lang="en">
@@ -3088,9 +3010,6 @@ if __name__ == "__main__":
     print(f"[*] Dismissed bench set: {len(_needs_bench_dismissed)} ASICs")
     _load_paired_devices()
     print(f"[*] Paired devices: {len(_PAIRED_DEVICES)}")
-    _load_fcm_tokens()
-    print(f"[*] FCM tokens: {len(_FCM_TOKENS)}")
-    _init_firebase()
     ts_ip = _tailscale_ip()
     print(f"[*] Tailscale IP: {ts_ip or 'not detected'}")
     _fetch_ambient_forecast()

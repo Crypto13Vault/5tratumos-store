@@ -41,16 +41,7 @@ class SettingsActivity : AppCompatActivity() {
 
         binding.btnReconnect.setOnClickListener {
             if (AuthManager.isPaired()) {
-                lifecycleScope.launch {
-                    val fcmToken = AuthManager.getFcmToken()
-                    if (fcmToken != null) {
-                        val deviceName = "${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}"
-                        val success = ApiClient.registerFcmToken(fcmToken, deviceName)
-                        if (success) {
-                            Toast.makeText(this@SettingsActivity, "FCM registered", Toast.LENGTH_SHORT).show()
-                        }
-                    }
-                }
+                Toast.makeText(this, "Connected", Toast.LENGTH_SHORT).show()
             }
         }
     }

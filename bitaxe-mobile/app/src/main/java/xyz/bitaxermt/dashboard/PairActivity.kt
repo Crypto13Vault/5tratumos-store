@@ -146,11 +146,6 @@ class PairActivity : AppCompatActivity() {
                         val sessionKey = json.get("session_key")?.asString ?: ""
                         AuthManager.saveConnection(host, port, sessionKey)
 
-                        val fcmToken = AuthManager.getFcmToken()
-                        if (fcmToken != null) {
-                            ApiClient.registerFcmToken(fcmToken, deviceName)
-                        }
-
                         withContext(Dispatchers.Main) {
                             Toast.makeText(this@PairActivity,
                                 getString(R.string.pairing_success), Toast.LENGTH_SHORT).show()

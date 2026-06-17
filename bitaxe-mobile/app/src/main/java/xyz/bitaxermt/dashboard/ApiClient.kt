@@ -56,9 +56,6 @@ object ApiClient {
     }
 
     suspend fun registerFcmToken(fcmToken: String, deviceName: String): Boolean {
-        val json = """{"fcm_token":"$fcmToken","device_name":"$deviceName"}"""
-        val url = "${AuthManager.getBaseUrl()}/api/fcm/register"
-        val result = postJson(url, json)
-        return result?.contains("\"ok\":true") == true
+        return false
     }
 }

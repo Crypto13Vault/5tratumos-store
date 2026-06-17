@@ -11,7 +11,6 @@ object AuthManager {
     private const val KEY_HOST = "host"
     private const val KEY_PORT = "port"
     private const val KEY_SESSION = "session_key"
-    private const val KEY_FCM = "fcm_token"
 
     private lateinit var prefs: SharedPreferences
 
@@ -41,12 +40,6 @@ object AuthManager {
             .putString(KEY_SESSION, sessionKey)
             .apply()
     }
-
-    fun setFcmToken(token: String) {
-        prefs.edit().putString(KEY_FCM, token).apply()
-    }
-
-    fun getFcmToken(): String? = prefs.getString(KEY_FCM, null)
 
     fun clear() {
         prefs.edit().clear().apply()
