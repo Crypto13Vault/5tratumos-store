@@ -7,10 +7,11 @@ tagline: Bitaxe ASIC fleet dashboard with auto-throttle & benchmark
 icon: icon.png
 description: >-
   Monitor, control, and auto-discover your Bitaxe ASIC fleet.
-  Automatically detects miners on your LAN, benchmarks
-  frequency/voltage performance with hill-climbing, and
-  dynamically throttles to balance hashrate vs temperature.
-  Includes 24h predictive planning using weather forecasts.
+  Automatically detects miners on your LAN, monitors real-time
+  temperature and hashrate, benchmarks frequency/voltage
+  performance with hill-climbing, and dynamically auto-throttles
+  to balance hashrate vs temperature. Includes 24h predictive
+  planning using weather forecasts.
 developer: Crypto13Vault
 website: https://github.com/Crypto13Vault/5tratumos-store
 support: https://github.com/Crypto13Vault/5tratumos-store/issues
