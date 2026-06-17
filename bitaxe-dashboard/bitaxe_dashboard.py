@@ -208,9 +208,25 @@ _PUSHED_OVERHEAT = {}
 _PUSH_LOCK = threading.Lock()
 
 def _tailscale_ip():
+    env_ip = os.environ.get("TAILSCALE_IP", "").strip()
+    if env_ip:
+        return env_ip
+    host_ip = os.environ.get("DASHBOARD_HOST", "").strip()
+    if host_ip:
+        return host_ip
     try:
         out = subprocess.check_output(["tailscale", "ip", "-4"], timeout=3, stderr=subprocess.DEVNULL).decode().strip()
-        return out.split()[0] if out else None
+        ts = out.split()[0] if out else None
+        if ts:
+            return ts
+    except Exception:
+        pass
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan = s.getsockname()[0]
+        s.close()
+        return lan
     except Exception:
         return None
 
@@ -283,7 +299,28 @@ def _sse_broadcast(event_type, data):
         for q in dead:
             _SSE_CLIENTS.remove(q)
 
+_FCM_INITIALIZED = False
+
+def _init_firebase():
+    global _FCM_INITIALIZED
+    if _FCM_INITIALIZED:
+        return
+    try:
+        import firebase_admin
+        cred_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "firebase-service-account.json")
+        if not os.path.exists(cred_path):
+            print(f"[!] Firebase: service account not found at {cred_path}")
+            return
+        cred = firebase_admin.credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+        _FCM_INITIALIZED = True
+        print("[*] Firebase initialized")
+    except Exception as e:
+        print(f"[!] Firebase init failed: {e}")
+
 def _send_fcm_push(title, body, data=None):
+    if not _FCM_INITIALIZED:
+        return
     try:
         import firebase_admin.messaging as messaging
         with _FCM_TOKENS_LOCK:
@@ -3053,6 +3090,7 @@ if __name__ == "__main__":
     print(f"[*] Paired devices: {len(_PAIRED_DEVICES)}")
     _load_fcm_tokens()
     print(f"[*] FCM tokens: {len(_FCM_TOKENS)}")
+    _init_firebase()
     ts_ip = _tailscale_ip()
     print(f"[*] Tailscale IP: {ts_ip or 'not detected'}")
     _fetch_ambient_forecast()

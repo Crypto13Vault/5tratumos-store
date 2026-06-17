@@ -13,6 +13,7 @@ services:
           - bitaxe-dashboard
     environment:
       SCAN_SUBNET: "192.168.0.0/24"
+      DASHBOARD_HOST: "100.104.162.99"
       THROTTLE_HIGH: "67"
       THROTTLE_PERF_TEMP: "55"
       THROTTLE_LOW: "60"

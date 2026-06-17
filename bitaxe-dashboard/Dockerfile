@@ -4,6 +4,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends sshpass openssh
 RUN pip install --no-cache-dir flask qrcode[pil] firebase-admin
 
 COPY bitaxe_dashboard.py /app/
+COPY firebase-service-account.json /app/config/
 WORKDIR /app
 
 EXPOSE 5050
