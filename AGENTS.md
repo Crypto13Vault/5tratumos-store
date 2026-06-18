@@ -3,7 +3,7 @@
 ## GitHub
 
 - **Repo**: `https://github.com/Crypto13Vault/5tratumos-store`
-- **Token**: `YOUR_GITHUB_TOKEN` (full access, no expiry)
+- **Token**: `${GITHUB_TOKEN}` (full access, no expiry, set in env)
 
 ```bash
 gh repo clone Crypto13Vault/5tratumos-store
@@ -16,9 +16,9 @@ git push -u origin main
 ```
 Host:  192.168.0.200
 User:  forge
-Pass:  YOUR_SERVER_PASSWORD
-SSH:   sshpass -p 'YOUR_SERVER_PASSWORD' ssh -o StrictHostKeyChecking=no forge@192.168.0.200
-Sudo:  echo 'YOUR_SERVER_PASSWORD' | sudo -S <command>
+Pass:  Domi191219
+SSH:   sshpass -p 'Domi191219' ssh -o StrictHostKeyChecking=no forge@192.168.0.200
+Sudo:  echo 'Domi191219' | sudo -S <command>
 ```
 
 ## RPC Credentials
@@ -59,8 +59,10 @@ BCH wallet uses `-datadir=/data` which reads `/data/bitcoin.conf` automatically.
 
 | Name | Image | Purpose |
 |---|---|---|
-| `public-ckpool-btc` | `ghcr.io/willitmod/docker-ckpool-solo:590fb2a` | BTC stratum pool |
-| `public-ckpool-bch` | same image | BCH stratum pool |
+| `public-ckpool-btc` | `ghcr.io/willitmod/docker-ckpool-solo:590fb2a` | BTC main stratum (port 28334) |
+| `public-ckpool-btc-booster` | same image | BTC BOOSTER rental stratum (port 28338, 1M diff) |
+| `public-ckpool-bch` | same image | BCH main stratum (port 28335) |
+| `public-ckpool-bch-booster` | same image | BCH BOOSTER rental stratum (port 28337, 1M diff) |
 | `public-bch-wallet` | `zquestz/bitcoin-cash-node:latest` | BCH wallet (no P2P, RPC only) |
 | `bitaxe-dashboard-dashboard-1` | `bitaxe-dashboard-dashboard` | ASIC fleet dashboard |
 | `5tratumos-axebtc-bitcoind-1` | `ghcr.io/willitmod/axebtc-bitcoind-switch:0.7.44` | BTC full node (pruned 500MB) |
@@ -138,9 +140,14 @@ docker restart bitaxe-dashboard-dashboard-1
 | 28336 | BCH wallet RPC | No |
 | 28338 | BTC rental stratum (1M diff, TCP) | Router-forwarded |
 | 28337 | BCH rental stratum (1M diff, TCP) | Router-forwarded |
+| 28338 | BTC rental stratum (1M diff, TCP) | Router-forwarded |
+| 28337 | BCH rental stratum (1M diff, TCP) | Router-forwarded |
 
 Domains: `bitaxermt.xyz` (BTC, `@` A record), `bch.bitaxermt.xyz` (BCH) → `81.107.193.88`  
 IP direct: `http://81.107.193.88` (HTTPS on bare IP fails — no Let's Encrypt certs for IPs)
+
+Router port forwards:
+- `192.168.0.200:28337-28338` → `28337-28338` TCP (BCH + BTC rental)
 
 ## ckpool Config
 
@@ -186,7 +193,9 @@ IP direct: `http://81.107.193.88` (HTTPS on bare IP fails — no Let's Encrypt c
 - **`read_all_workers()` vs `read_workers()`**: `read_all_workers()` reads ckpool JSON without 300s inactivity filter — used for round-share calculations. `read_workers()` (filtered, active-only) used for live hashrate display and leaderboard
 - **Round Shares panel**: `/api/round` endpoint returns all addresses' round-accumulated shares, percentages, estimated PROP; "ROUND" button on leaderboard opens slide-out panel. Round shares only reset on block find (or daemon restart)
 - **Party Best Share refresh**: `index.html` line 347 has `if (!lastAddr)` guard that prevents `stat-bestshare` from updating when viewing an address. If a worker finds a new best share, the party best share stat stays stale until page refresh. Fix: remove the guard so party best share always updates on every refresh cycle regardless of `lastAddr`
-- **Rental ports (28336/28337)**: 1M startdiff/mindiff, 10M maxdiff. Rentals mine to BOOSTER address — already excluded from leaderboard, round shares, and worker listings. Rental hashrate included in pool total hashrate. No UI changes needed. Router-forwards required.
+- **Rental ports (28338/28337)**: 1M startdiff/mindiff, 10M maxdiff. Rentals mine to BOOSTER address — already excluded from leaderboard, round shares, and worker listings. Rental hashrate included in pool total hashrate. Router-forwards required.
+- **ckpool-solo only binds port 3333** — the `listener` array's `port` field is ignored by this fork. Second listener entries do NOT bind. Second ckpool container required for separate port with different difficulty.
+- **Booster worker data merge**: `read_worker_data()` (payout) and `read_workers()`/`read_all_workers()` (dashboard) read from BOTH `www/users` and `www-booster/users` directories, merging by workername (sum shares, max bestshare/lastshare). Same workername in both dirs = shares get summed.
 
 ## Dashboard Frontend
 
@@ -301,9 +310,9 @@ sudo systemctl restart publicpool-bch-payout
 sudo systemctl restart publicpool-dashboard
 sudo systemctl restart publicpool-bch-dashboard
 
-# IMPORTANT: ckpool containers need --entrypoint /bin/sh override
-# Image default ENTRYPOINT is 'ckpool' (runs with no args = fails).
-# Correct docker run:
+# IMPORTANT: ckpool-solo only binds port 3333 — listener port config is ignored.
+# BOOSTER rental ports use a SECOND ckpool container per coin with separate config.
+# Correct docker runs:
 docker run -d --name public-ckpool-btc --restart unless-stopped \
   --network 5tratumos-axebtc_default --network-alias ckpool \
   --entrypoint /bin/sh \
@@ -311,7 +320,16 @@ docker run -d --name public-ckpool-btc --restart unless-stopped \
   -v /var/lib/5tratumos/apps/publicpool/data/pool/www:/www \
   -v /var/lib/5tratumos/apps/publicpool/entrypoint.sh:/entrypoint.sh:ro \
   -p 28334:3333 \
-  -p 28338:28338 \
+  ghcr.io/willitmod/docker-ckpool-solo:590fb2a \
+  /entrypoint.sh
+
+docker run -d --name public-ckpool-btc-booster --restart unless-stopped \
+  --network 5tratumos-axebtc_default \
+  --entrypoint /bin/sh \
+  -v /var/lib/5tratumos/apps/publicpool/data/pool/config/ckpool-booster.conf:/config/ckpool.conf:ro \
+  -v /var/lib/5tratumos/apps/publicpool/data/pool/www-booster:/www-booster \
+  -v /var/lib/5tratumos/apps/publicpool/booster-entrypoint.sh:/entrypoint.sh:ro \
+  -p 28338:3333 \
   ghcr.io/willitmod/docker-ckpool-solo:590fb2a \
   /entrypoint.sh
 
@@ -322,9 +340,26 @@ docker run -d --name public-ckpool-bch --restart unless-stopped \
   -v /var/lib/5tratumos/apps/publicpool-bch/data/pool/www:/www \
   -v /var/lib/5tratumos/apps/publicpool-bch/entrypoint.sh:/entrypoint.sh:ro \
   -p 28335:3333 \
-  -p 28337:28337 \
+  ghcr.io/willitmod/docker-ckpool-solo:590fb2a \
+  /entrypoint.sh
+
+docker run -d --name public-ckpool-bch-booster --restart unless-stopped \
+  --network 5tratumos-axebch_default \
+  --entrypoint /bin/sh \
+  -v /var/lib/5tratumos/apps/publicpool-bch/data/pool/config/ckpool-booster.conf:/config/ckpool.conf:ro \
+  -v /var/lib/5tratumos/apps/publicpool-bch/data/pool/www-booster:/www-booster \
+  -v /var/lib/5tratumos/apps/publicpool-bch/booster-entrypoint.sh:/entrypoint.sh:ro \
+  -p 28337:3333 \
   ghcr.io/willitmod/docker-ckpool-solo:590fb2a \
   /entrypoint.sh
 ```
 
 Deploy order: SCP files → sudo-cp → restart dashboard(s) + payout(s) in the right dependency order (payout first, then dashboard if both changed). Verify with `curl -s http://localhost:{8080,8081}/api/round | python3 -m json.tool`.
+
+### Booster ckpool configs
+
+Each booster ckpool has its own config file at `ckpool-booster.conf` (e.g. `/var/lib/5tratumos/apps/publicpool/data/pool/config/ckpool-booster.conf`) with:
+- `btcaddress` set to the BOOSTER address
+- `mindiff/startdiff: 1000000`, `maxdiff: 10000000`
+- Separate `www` dir (`/www-booster`) — dashboard/payout code reads from BOTH main and booster user dirs via `read_worker_data()` (payout) and `read_workers()`/`read_all_workers()` (dashboard), merging worker data and summing shares for identical workernames.
+- Uses the same bitcoind/bitcoincashd node as the main ckpool
